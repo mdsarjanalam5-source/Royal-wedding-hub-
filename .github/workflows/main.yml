@@ -1,0 +1,122 @@
+
+name: Build Royal Wedding Hub APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract project ZIP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip
+
+          ZIP=$(find . -type f -iname '*.zip' \
+            ! -path './.git/*' | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: Repository mein ZIP file nahi mili."
+            exit 1
+          fi
+
+          echo "Extracting: $ZIP"
+          mkdir -p extracted
+          unzip -o "$ZIP" -d extracted
+
+          echo "Files extracted:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Find website files
+        run: |
+          HTML=$(find extracted -type f -name index.html | head -n 1)
+
+          if [ -z "$HTML" ]; then
+            echo "ERROR: ZIP mein index.html nahi mili."
+            echo "Agar ZIP Android Studio project hai, uske liye alag build step chahiye."
+            exit 1
+          fi
+
+          mkdir -p www
+          cp -a "$(dirname "$HTML")"/. www/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK manually
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          cd "$RUNNER_TEMP"
+
+          curl -fsSLo commandlinetools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+
+          mkdir -p android-tools
+          unzip -q commandlinetools.zip -d android-tools
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          cp -a android-tools/cmdline-tools/. \
+            "$ANDROID_HOME/cmdline-tools/latest/"
+
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_HOME" --licenses
+
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core@7 @capacitor/android@7
+          npm install --save-dev @capacitor/cli@7
+
+      - name: Configure Royal Wedding Hub
+        run: |
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.royalweddinghub.app",
+            "appName": "Royal Wedding Hub",
+            "webDir": "www"
+          }
+          EOF
+
+          npx cap add android
+          npx cap sync android
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Royal-Wedding-Hub-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          
